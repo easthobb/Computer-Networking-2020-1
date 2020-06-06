@@ -47,14 +47,13 @@ void tolayer5(int AorB, char datasent[20]);
 #define BUFSIZE 64
 
 struct Sender { // 윈도우 캔낫 무브 포워드 해야된댕
-    int base; //베이스는 무엇일가
+    int base; //베이스는 무엇일가 윈도우 처음
     int nextseq; //넥스트 시퀀스는 무엇일가...
     int window_size; //이거 입력 받아야한다.
     float estimated_rtt; //이건 왜 들어가있지 아 
     int buffer_next;
     struct pkt packet_buffer[BUFSIZE];
 } A;
-
 struct Receiver {
     int expect_seq; //예상하는 시퀀스
     int window_size; // 추가변수 
@@ -70,11 +69,12 @@ int get_checksum(struct pkt *packet) { //패킷 넣어주면 체크섬 반환하
     return checksum;
 }
 
-void send_window(void) { //패킷 보낸다아아아
+void send_window(void)
+{ //패킷 보낸다아아아
     while (A.nextseq < A.buffer_next && A.nextseq < A.base + A.window_size) {
-        struct pkt *packet = &A.packet_buffer[A.nextseq % BUFSIZE];
+        struct pkt *packet = &A.packet_buffer[A.nextseq % BUFSIZE]; //연결리스트 형태로 메시받은 메시지 넣음
         printf("  send_window: send packet (seq=%d): %s\n", packet->seqnum, packet->payload);
-        tolayer3(0, *packet); // 이걸로 보내내
+        tolayer3(0, *packet); // 이걸로 보내내 
         if (A.base == A.nextseq)
             starttimer(0, A.estimated_rtt);
         ++A.nextseq;
@@ -82,8 +82,11 @@ void send_window(void) { //패킷 보낸다아아아
 }
 
 /* called from layer 5, passed the data to be sent to other side */
-void A_output(struct msg message) {
-    if (A.buffer_next - A.base >= BUFSIZE) {
+void A_output(struct msg message)
+{
+
+    if (A.buffer_next - A.base >= BUFSIZE) //여기 버퍼 꽉차면 못가~~~ 이런 느낌인듯
+    {
         printf("  A_output: buffer full. drop the message: %s\n", message.data);
         return;
     }
@@ -118,7 +121,7 @@ void A_input(struct pkt packet) {
         printf("  A_input: stop timer\n");
         send_window();
     } else {
-        starttimer(0, A.estimated_rtt);
+        starttimer(0, A.estimated_rtt); // starting
         printf("  A_input: timer + %f\n", A.estimated_rtt);
     }
 }
@@ -147,13 +150,16 @@ void A_init(void) {
 /* Note that with simplex transfer from a-to-B, there is no B_output() */
 
 /* called from layer 3, when a packet arrives for layer 4 at B*/
-void B_input(struct pkt packet) {
-    if (packet.checksum != get_checksum(&packet)) {
+void B_input(struct pkt packet) //리시버단의 핵심코드
+{
+    if (packet.checksum != get_checksum(&packet))
+    {
         printf("  B_input: packet corrupted. send NAK (ack=%d)\n", B.packet_to_send.acknum);
         tolayer3(1, B.packet_to_send);
         return;
     }
-    if (packet.seqnum != B.expect_seq) {
+    if (packet.seqnum != B.expect_seq)
+    {
         printf("  B_input: not the expected seq. send NAK (ack=%d)\n", B.packet_to_send.acknum);
         tolayer3(1, B.packet_to_send);
         return;
