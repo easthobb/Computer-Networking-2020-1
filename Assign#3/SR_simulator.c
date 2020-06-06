@@ -69,7 +69,7 @@ int get_checksum(struct pkt *packet) { //패킷 넣어주면 체크섬 반환하
     return checksum;
 }
 
-void send_window(void)
+void send_window(void) // PKT 쏘는 함수 이부분은 고칠게 없다,
 { //패킷 보낸다아아아
     while (A.nextseq < A.buffer_next && A.nextseq < A.base + A.window_size) {
         struct pkt *packet = &A.packet_buffer[A.nextseq % BUFSIZE]; //연결리스트 형태로 메시받은 메시지 넣음
@@ -85,7 +85,7 @@ void send_window(void)
 void A_output(struct msg message)
 {
 
-    if (A.buffer_next - A.base >= BUFSIZE) //여기 버퍼 꽉차면 못가~~~ 이런 느낌인듯
+    if (A.buffer_next - A.base >= BUFSIZE) //cannot move forward
     {
         printf("  A_output: buffer full. drop the message: %s\n", message.data);
         return;
@@ -96,40 +96,62 @@ void A_output(struct msg message)
     memmove(packet->payload, message.data, 20);//메모리 복사!!
     packet->checksum = get_checksum(packet);
     ++A.buffer_next;
-    send_window();
+    send_window();//준비되시면 쏘세요~!
 }
 
 /* need be completed only for extra credit */
-void B_output(struct msg message) {
+void B_output(struct msg message)
+{
     printf("  B_output: uni-directional. ignore.\n");
 }
 
 /* called from layer 3, when a packet arrives for layer 4 */
-void A_input(struct pkt packet) {
-    if (packet.checksum != get_checksum(&packet)) {
+void A_input(struct pkt packet) // sender 동작의 핵심.
+{
+   /*ack 3가지 경우의 수 구현 요망*/
+   /*ack 번호가 base 이전, ack의 번호가 base와 base+windowsize(<=buffer)이전, base+window size 바깥*/
+   //1.ack 번호 base 이전일시 -> 무적권 디스카드
+   //2.ack 적절한 범위 일때, 
+   // 안차있을 경우 ->ack 필드 인정 채워주기, 차있을 경우 -> 교수님 드뢉더빗
+   // 안차있는데 심지어 base다 ? 그럼 base 앞으로 forward 
+   //3. 이런 ack가 올리가 없지 
+   // 추가적으로 타이머 고려 필요
+    if (packet.checksum != get_checksum(&packet))
+    {
         printf("  A_input: packet corrupted. drop.\n");
         return;
+    } // corrupt 필요하지 않음 삭제 예정 - 문제에선 커럽트 가정하지 않는다. 
+    
+    if (packet.acknum < A.base) //if in duplicated ack situation
+    {
+        printf("  A_input: got (ack=%d). drop.\n", packet.acknum); 
+        return; // ack 번호 출력 및 drop 후 함수 종료
     }
-    if (packet.acknum < A.base) {
-        printf("  A_input: got NAK (ack=%d). drop.\n", packet.acknum);
-        return;
-    }
+ 
     printf("  A_input: got ACK (ack=%d)\n", packet.acknum);
     A.base = packet.acknum + 1;
-    if (A.base == A.nextseq) {
+
+    if (A.base == A.nextseq)
+    {
         stoptimer(0);
         printf("  A_input: stop timer\n");
         send_window();
-    } else {
+    } 
+    else 
+    {
         starttimer(0, A.estimated_rtt); // starting
         printf("  A_input: timer + %f\n", A.estimated_rtt);
     }
 }
 
 /* called when A's timer goes off */
-void A_timerinterrupt(void) {
-    for (int i = A.base; i < A.nextseq; ++i) {
-        struct pkt *packet = &A.packet_buffer[i % BUFSIZE];
+void A_timerinterrupt(void){ 
+/*A의 timer interrupt 발생 시 호출되는 함수*/
+// 해주는 일 : 선택적 재전송 
+// base에 해당하는 PKT를 다시 전송해주면 된다. 그리고 다시 타이머 스타팅.
+    for (int i = A.base; i < A.nextseq; ++i) 
+    {
+        struct pkt *packet = &A.packet_buffer[i % BUFSIZE]; //인덱스 오버 방지차원에서 해놓은거구만
         printf("  A_timerinterrupt: resend packet (seq=%d): %s\n", packet->seqnum, packet->payload);
         tolayer3(0, *packet);
     }
@@ -139,7 +161,7 @@ void A_timerinterrupt(void) {
 
 /* the following routine will be called once (only) before any other */
 /* entity A routines are called. You can use it to do any initialization */
-void A_init(void) {
+void A_init(void) { // 변수 초기화 하는 곳이구만 다 ~ 아는 놈들이구먼
     A.base = 1;
     A.nextseq = 1;
     A.window_size = 8;
@@ -150,20 +172,22 @@ void A_init(void) {
 /* Note that with simplex transfer from a-to-B, there is no B_output() */
 
 /* called from layer 3, when a packet arrives for layer 4 at B*/
-void B_input(struct pkt packet) //리시버단의 핵심코드
-{
-    if (packet.checksum != get_checksum(&packet))
-    {
-        printf("  B_input: packet corrupted. send NAK (ack=%d)\n", B.packet_to_send.acknum);
-        tolayer3(1, B.packet_to_send);
-        return;
-    }
+void B_input(struct pkt packet) //리시버단의 핵심코드 
+{/*SR에서 receiver가 해야하는 일 크게  : 1-리시버 윈도우에 해당하는 PKT 올경우 ACK, 2-받은 메시지 출력*/
+/* PKT 송신시*/
+// 1.receiver window 범위 내에 있는 ack가 도착했을 경우 base+window<buffer
+// 1-1 base에 해당하는 PKT 일시 ack 보내주고, base 전진 -> 전진했는데 이미 다음 순서 차있다? 그럼 또 전진
+// 1-2 base에 해당하지 않을경우 버퍼에 채워주고 ack 쏴준다
+// 2.receiver window 범위 바깥에 있는 ack가 도착했을 경우
+// 2-1 base 이전 순서의 PKT의 경우 discard 메시지와 함께 무시
+// 2-2 base+windowsize의 PKT 의 경우 어떻게 처리하는지는 설계의 문제이나 안정성을 위해 discard
+
     if (packet.seqnum != B.expect_seq)
     {
         printf("  B_input: not the expected seq. send NAK (ack=%d)\n", B.packet_to_send.acknum);
         tolayer3(1, B.packet_to_send);
         return;
-    }
+    }//GBN
 
     printf("  B_input: recv packet (seq=%d): %s\n", packet.seqnum, packet.payload);
     tolayer5(1, packet.payload);
@@ -177,7 +201,7 @@ void B_input(struct pkt packet) //리시버단의 핵심코드
 }
 
 /* called when B's timer goes off */
-void B_timerinterrupt(void) {
+void B_timerinterrupt(void) { // 이 부분은 채점기준에 없다.
     printf("  B_timerinterrupt: B doesn't have a timer. ignore.\n");
 }
 
