@@ -58,33 +58,32 @@ struct Receiver {
     int expect_seq; //예상하는 시퀀스
     int window_size; // 추가변수 
     struct pkt packet_to_send; // 패킷 버퍼?
+    /* hobbs adding */
+    int base;
+    int nextseq;
+    int buffer_next;
+    struct pkt packet_buffer[BUFSIZE];
 } B;
-
-int get_checksum(struct pkt *packet) { //패킷 넣어주면 체크섬 반환하는 함수. Seq+Ack+payload
-    int checksum = 0;
-    checksum += packet->seqnum;
-    checksum += packet->acknum;
-    for (int i = 0; i < 20; ++i) 
-        checksum += packet->payload[i];
-    return checksum;
-}
 
 void send_window(void) // PKT 쏘는 함수 이부분은 고칠게 없다,
 { //패킷 보낸다아아아
-    while (A.nextseq < A.buffer_next && A.nextseq < A.base + A.window_size) {
+    while (A.nextseq < A.buffer_next && A.nextseq < A.base + A.window_size) 
+    {
+       /* 미리 정의된 packet_buffer에 들어있던 패킷의 포인터 변수를 꺼내와서 layer3로 전송한다.*/
+       /* 전송하는 패킷의 seq#, payload 영역을 출력*/ 
         struct pkt *packet = &A.packet_buffer[A.nextseq % BUFSIZE]; //연결리스트 형태로 메시받은 메시지 넣음
         printf("  send_window: send packet (seq=%d): %s\n", packet->seqnum, packet->payload);
         tolayer3(0, *packet); // 이걸로 보내내 
-        if (A.base == A.nextseq)
-            starttimer(0, A.estimated_rtt);
+        if (A.base == A.nextseq) 
+            starttimer(0, A.estimated_rtt); // 왜 RTT랑 함께 이걸 보내는걸까? 
         ++A.nextseq;
     }
 }
 
 /* called from layer 5, passed the data to be sent to other side */
-void A_output(struct msg message)
+void A_output(struct msg message) 
 {
-
+   /* layer 5에서 호출되며 상위의 메시지 출력 및 버퍼에 넣음 */
     if (A.buffer_next - A.base >= BUFSIZE) //cannot move forward
     {
         printf("  A_output: buffer full. drop the message: %s\n", message.data);
@@ -93,8 +92,8 @@ void A_output(struct msg message)
     printf("  A_output: bufferred packet (seq=%d): %s\n", A.buffer_next, message.data);
     struct pkt *packet = &A.packet_buffer[A.buffer_next % BUFSIZE];
     packet->seqnum = A.buffer_next;
+    packet->acknum = 0;
     memmove(packet->payload, message.data, 20);//메모리 복사!!
-    packet->checksum = get_checksum(packet);
     ++A.buffer_next;
     send_window();//준비되시면 쏘세요~!
 }
@@ -116,18 +115,54 @@ void A_input(struct pkt packet) // sender 동작의 핵심.
    // 안차있는데 심지어 base다 ? 그럼 base 앞으로 forward 
    //3. 이런 ack가 올리가 없지 
    // 추가적으로 타이머 고려 필요
-    if (packet.checksum != get_checksum(&packet))
-    {
-        printf("  A_input: packet corrupted. drop.\n");
-        return;
-    } // corrupt 필요하지 않음 삭제 예정 - 문제에선 커럽트 가정하지 않는다. 
+
     
-    if (packet.acknum < A.base) //if in duplicated ack situation
-    {
-        printf("  A_input: got (ack=%d). drop.\n", packet.acknum); 
-        return; // ack 번호 출력 및 drop 후 함수 종료
-    }
- 
+   if (packet.acknum < A.base) //if in duplicated ack situation
+   {
+      printf("  A_input: got (ack=%d). drop.\n", packet.acknum); 
+      return; // ack 번호 출력 및 drop 후 함수 종료
+
+   }//case I clearing
+
+   /* 받은 ack가 적절한 범위 내의 ack 일때*/
+   else if(packet.acknum > A.base && packet.acknum <A.base+A.window_size)// 이부분 조건문 개선필요
+   {  
+      //보내기로 한 pkt 집합 속에서 현재 받은 ack 번호에 해당하는 pkt 꺼내옴
+      struct pkt *checkedPacket = &A.packet_buffer[packet.seqnum-1];
+
+      //
+      if(packet.acknum == A.base)
+      {
+         printf("  A_input: got ACK (ack=%d)\n", packet.acknum);
+         A.base = packet.acknum + 1;
+         checkedPacket->acknum = packet.acknum;
+
+         for(int i=checkedPacket->seqnum;i<A.base+A.window_size;i++)
+         {
+            //센딩윈도우만큼 ack 검사해줄지말지 고민쓰?
+            if(&A.packet_buffer[i].acknum==&A.packet_buffer[i].seqnum)
+               A.base++;
+            else
+               return; 
+         }
+      }
+      else//차있거나 안차있거나
+      {
+         if(checkedPacket->acknum==0) //안차있을경우
+         {
+            printf("  A_input: got ACK (ack=%d)\n", packet.acknum);
+            checkedPacket->acknum == packet.seqnum;
+            return;
+         }
+         else//차있을경우
+         {
+            printf("  A_input: got (ack=%d). drop.\n", packet.acknum);
+            return;      
+         }
+      }
+
+   }
+    
     printf("  A_input: got ACK (ack=%d)\n", packet.acknum);
     A.base = packet.acknum + 1;
 
