@@ -74,8 +74,8 @@ void send_window(void) // PKT 쏘는 함수 이부분은 고칠게 없다,
         struct pkt *packet = &A.packet_buffer[A.nextseq % BUFSIZE]; //연결리스트 형태로 메시받은 메시지 넣음
         printf("  send_window: send packet (seq=%d): %s\n", packet->seqnum, packet->payload);
         tolayer3(0, *packet); // 이걸로 보내내 
-        if (A.base == A.nextseq) 
-            starttimer(0, A.estimated_rtt); // 왜 RTT랑 함께 이걸 보내는걸까? 
+      if (A.base == A.nextseq) 
+         {starttimer(0, A.estimated_rtt);} // 왜 RTT랑 함께 이걸 보내는걸까?
         ++A.nextseq;
     }
 }
@@ -119,24 +119,25 @@ void A_input(struct pkt packet) // sender 동작의 핵심.
     
    if (packet.acknum < A.base) //if in duplicated ack situation
    {
-      printf("  A_input: got (ack=%d). drop.\n", packet.acknum); 
+      printf("  A_input: got (ack=%d). drop. the bit\n", packet.acknum); 
       return; // ack 번호 출력 및 drop 후 함수 종료
 
    }//case I clearing
 
    /* 받은 ack가 적절한 범위 내의 ack 일때*/
-   else if(packet.acknum > A.base && packet.acknum <A.base+A.window_size)// 이부분 조건문 개선필요
+   else if(packet.acknum >= A.base && packet.acknum <A.base+A.window_size)// 이부분 조건문 개선필요
    {  
       //보내기로 한 pkt 집합 속에서 현재 받은 ack 번호에 해당하는 pkt 꺼내옴
-      struct pkt *checkedPacket = &A.packet_buffer[packet.seqnum-1];
+      struct pkt *checkedPacket = &A.packet_buffer[packet.seqnum];
 
-      //
-      if(packet.acknum == A.base)
+      printf("packet acknum:%d\n",packet.acknum);
+      if(packet.acknum == A.base)//base에 해당하s는 ack 가 올 경우
       {
-         printf("  A_input: got ACK (ack=%d)\n", packet.acknum);
-         A.base = packet.acknum + 1;
+         printf("A_input: got ACK (ack=%d) base : %d, seqnum:%d\n", packet.acknum,A.base,packet.seqnum);
+         stoptimer(0);
+         A.base++;
          checkedPacket->acknum = packet.acknum;
-
+         //stoptimer(A.base);
          for(int i=checkedPacket->seqnum;i<A.base+A.window_size;i++)
          {
             //센딩윈도우만큼 ack 검사해줄지말지 고민쓰?
@@ -146,37 +147,38 @@ void A_input(struct pkt packet) // sender 동작의 핵심.
                return; 
          }
       }
-      else//차있거나 안차있거나
+      else//base에 해당하지 않는 ack 올 경우
       {
          if(checkedPacket->acknum==0) //안차있을경우
          {
-            printf("  A_input: got ACK (ack=%d)\n", packet.acknum);
-            checkedPacket->acknum == packet.seqnum;
+            printf("  A_input: got ACK (ack=%d) seqnum:%d store ack \n", packet.acknum,packet.seqnum);
+            checkedPacket->acknum = packet.seqnum;
             return;
          }
          else//차있을경우
          {
             printf("  A_input: got (ack=%d). drop.\n", packet.acknum);
+            //stoptimer(0);
             return;      
          }
       }
 
    }
     
-    printf("  A_input: got ACK (ack=%d)\n", packet.acknum);
-    A.base = packet.acknum + 1;
+   //  printf("  A_input: got ACK (ack=%d)\n", packet.acknum);
+   //  A.base = packet.acknum + 1;
 
-    if (A.base == A.nextseq)
-    {
-        stoptimer(0);
-        printf("  A_input: stop timer\n");
-        send_window();
-    } 
-    else 
-    {
-        starttimer(0, A.estimated_rtt); // starting
-        printf("  A_input: timer + %f\n", A.estimated_rtt);
-    }
+   //  if (A.base == A.nextseq)
+   //  {
+   //      stoptimer(0);
+   //      printf("  A_input: stop timer\n");
+   //      send_window();
+   //  } 
+   //  else 
+   //  {
+   //      starttimer(0, A.estimated_rtt); // starting
+   //      printf("  A_input: timer + %f\n", A.estimated_rtt);
+   //  }
 }
 
 /* called when A's timer goes off */
@@ -193,7 +195,7 @@ void A_timerinterrupt(void){
 
 /* the following routine will be called once (only) before any other */
 /* entity A routines are called. You can use it to do any initialization */
-void A_init(void)
+void A_init()
 { // 변수 초기화 하는 곳이구만 다 ~ 아는 놈들이구먼
     A.base = 1;
     A.nextseq = 1;
@@ -225,31 +227,33 @@ void B_input(struct pkt packet) //리시버단의 핵심코드
    {   // 일단 포인터 먹히는지 봐야할듯 : packet buffer에 쑤셔넣기
    
    //printf("  B_input: recv packet (seq=%d): %s\n", packet.seqnum, packet.payload);
-      if(packet.seqnum == B.base)
+      if(packet.seqnum == B.base)//적당하게 들어올경우
       {
          /*pck ack 전송&payload upperlayer 전송&출력*base전진*/
          printf("B_input: recv packet (seq=%d): %s \n",packet.seqnum, packet.payload);
          tolayer5(1, packet.payload);//pkt seq 출력
-         packet.acknum = B.base; //PKT에 ack 담아줌
+         packet.acknum = packet.seqnum; //PKT에 ack 담아줌
          tolayer3(1,packet);//ack sending
          B.packet_buffer[ packet.seqnum % BUFSIZE] = packet;//패킷 어레이에 넣어주기
-         B.base = packet.seqnum + 1; //base 이동
-         if(B.packet_buffer[B.base-1].acknum!=0)//이미 다음 slot에 packet이 차있다면
-         {
-            B.base ++; //base 전진시킴.
-         }
+         printf("B_input: send ack packet:%d (seq=%d): %s,base :%d ver\n",packet.acknum,packet.seqnum, packet.payload,B.base);
+         B.base++; //base 이동
+         // issf(B.packet_buffer[B.base-1].acknum!=0)//이미 다음 slot에 packet이 차있다면
+         // {
+         //    B.base ++; //base 전진시킴.
+         // }
          return;
       }
-      else
+      else //순서 이상하게 들어올경우
       {  /*출력&payload upperlayer 전송&pck ack 전송*/
-         printf("(outoforeder)B_input: recv packet(buffered) (seq=%d): %s\n", packet.seqnum, packet.payload);
+         printf("(outoforeder)B_input: recv packet(buffered) (seq=%d): %s,base:%d\n", packet.seqnum, packet.payload,B.base);
          tolayer5(1, packet.payload);//pkt seq 출력
-         packet.acknum = B.base; //PKT에 ack 담아줌
+         packet.acknum = packet.seqnum; //PKT에 ack 담아줌
          tolayer3(1,packet);//ack sending
          B.packet_buffer[ packet.seqnum % BUFSIZE] = packet;//패킷 어레이에 넣어주기
          return;
       }
    }
+   
 }
 
 /* called when B's timer goes off */
@@ -261,11 +265,13 @@ void B_timerinterrupt(void) { // 이 부분은 채점기준에 없다.
 /* entity B routines are called. You can use it to do any initialization */
 void B_init(void)
 {
-    B.expect_seq = 1;
-    B.packet_to_send.seqnum = -1;
-    B.packet_to_send.acknum = 0;
-    memset(B.packet_to_send.payload, 0, 20);
-    B.packet_to_send.checksum = get_checksum(&B.packet_to_send);
+   B.base = 1;
+   B.window_size = 8;
+   B.expect_seq = 1;
+   B.packet_to_send.seqnum = -1;
+   B.packet_to_send.acknum = 0;
+   memset(B.packet_to_send.payload, 0, 20);
+   //B.packet_to_send.checksum = get_checksum(&B.packet_to_send);
 }
 
 /*****************************************************************
@@ -307,6 +313,7 @@ struct event *evlist = NULL; /* the event list */
 int TRACE = 1;     /* for my debugging */
 int nsim = 0;      /* number of messages from 5 to 4 so far */
 int nsimmax = 0;   /* number of msgs to generate, then stop */
+int window_size = 0; /* size of SR's window */
 float time = 0.000;
 float lossprob;    /* probability that a packet is dropped  */
 float corruptprob; /* probability that one bit is packet is flipped - not used  */
@@ -407,22 +414,24 @@ void init(int argc, char **argv) /* initialize the simulator */
     float jimsrand();
 
     if (argc != 6) {
-        printf("usage: %s  num_sim  prob_loss  timeout  interval  debug_level\n", argv[0]);
+        printf("usage: %s  Num_Message  prob_loss  window_sizie  AVGintervalfromsender'layer5  debug_level\n", argv[0]);
         exit(1);
     }
    /* 이부분에 number of message, loss prob, Window size, */
     nsimmax = atoi(argv[1]); // 1.number of message to simulate
     lossprob = atof(argv[2]); // 2.loss probabiltiy
-    timeout = atof(argv[3]); //3. the duration of the time from which the timer is stareted and till it's finished
+    window_size = atoi(argv[3]); // 3.window size of SR
     lambda = atof(argv[4]);//AVG time between message from sender's layer5
-    TRACE = atoi(argv[5]);
+    timeout = atof(argv[5]); //3. the duration of the time from which the timer is stareted and till it's finished
+    TRACE = atoi(argv[6]);
     corruptprob = 0;
-    printf("-----  Stop and Wait Network Simulator Version 1.1 -------- \n\n");
-    printf("the number of messages to simulate: %d\n", nsimmax)m;
+    printf("-----  Selective Repeat Simulator by KIM DONG HO-------- \n\n");
+    printf("the number of messages to simulate: %d\n", nsimmax);
     printf("packet loss probability: %f\n", lossprob);
-    printf("packet corruption probability: %f\n", corruptprob);
+    printf("Seltive Repeat's WINDOW SIZE: %d\n", window_size);
     printf("average time between messages from sender's layer5: %f\n", lambda);
-    printf("TRACE: %d\n", TRACE);
+    printf("timeout(duration of the time): %f\n", timeout);
+    printf("for MY DEBUGGING TRACE: %d\n", TRACE);
 
 
     srand(9999); /* init random number generator */
