@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,14 +32,15 @@ struct msg {
 struct pkt {
     int seqnum;  // seq # of sending PKT
     int acknum;   // ack # of sending PKT
-    int checksum; // checksum
-    char payload[20]; 
+    int checksum; // 주어진 문제에서 corrupt rate을 0으로 가정하기에 사용하지 않습니다.
+    char payload[20]; //packet의 DATA 영역 5layer의 msg에 해당합니다. 
 };
 
-void starttimer(int AorB, float increment); // AorB , increment?
-void stoptimer(int AorB); // stoptimer
-void tolayer3(int AorB, struct pkt packet);
-void tolayer5(int AorB, char datasent[20]);
+/* callable Routine의 함수 선언부, 문제에서 제공한 4가지 함수를 이용하여 SR을 구현합니다. */
+void starttimer(int AorB, float increment); // timer를 시작하는 함수, A - 0 ,B - 1로 입력받으며 increment 만큼의 시간이 경과시 Engine에 의해 timeout event 수행 
+void stoptimer(int AorB); // timer를 종료하는 함수, A - 0 ,B - 1로 입력받으며 실행 즉시 starttimer로 실행되고 있던 timer를 중지시켜 timeout event 방지
+void tolayer3(int AorB, struct pkt packet); //A 또는 B에서 packet을 layer 3로 내려서 전송이 이루어지게 하는 함수/
+void tolayer5(int AorB, char datasent[20]); //A 또는 B에서 packet을 layer 5로 올려줍니다 */
 
 /********* STUDENTS WRITE THE NEXT SEVEN ROUTINES *********/
 
@@ -50,18 +50,19 @@ struct Sender { // 윈도우 캔낫 무브 포워드 해야된댕
     int base; //베이스는 무엇일가 윈도우 처음
     int nextseq; //다음으로 전송할 seq , usable but not yet sent
     int window_size; //이거 입력 받아야한다.
-    float estimated_rtt; //이건 왜 들어가있지 아 
+    float timeout; //이건 왜 들어가있지 아 
     int buffer_next;
     struct pkt packet_buffer[BUFSIZE];
 } A;
 struct Receiver {
     int expect_seq; //예상하는 시퀀스
     int window_size; // 추가변수 
-    struct pkt packet_to_send; // 패킷 버퍼?
+   // struct pkt packet_to_send; // 패킷 버퍼?
     /* hobbs adding */
     int base;
-    int nextseq;
-    int buffer_next;
+    //int nextseq;
+    //int buffer_next;
+    float timeout;
     struct pkt packet_buffer[BUFSIZE];
 } B;
 
@@ -75,7 +76,7 @@ void send_window(void) // PKT 쏘는 함수 이부분은 고칠게 없다,
         printf("  send_window: send packet (seq=%d): %s\n", packet->seqnum, packet->payload);
         tolayer3(0, *packet); // 이걸로 보내내 
       if (A.base == A.nextseq) 
-         {starttimer(0, A.estimated_rtt);} // 왜 RTT랑 함께 이걸 보내는걸까?
+         {starttimer(0, A.timeout);} // 왜 RTT랑 함께 이걸 보내는걸까?
         ++A.nextseq;
     }
 }
@@ -189,19 +190,21 @@ void A_timerinterrupt(void){
    struct pkt *packet = &A.packet_buffer[A.base % BUFSIZE]; //인덱스 오버 방지차원에서 해놓은거구만
    printf("  A_timerinterrupt: resend packet (seq=%d): %s\n", packet->seqnum, packet->payload);
    tolayer3(0, *packet);
-   starttimer(0, A.estimated_rtt);
-   printf("  A_timerinterrupt: timer + %f\n", A.estimated_rtt);
+   starttimer(0, A.timeout);
+   printf("  A_timerinterrupt: timer + %f\n", A.timeout);
 }
 
 /* the following routine will be called once (only) before any other */
 /* entity A routines are called. You can use it to do any initialization */
-void A_init()
-{ // 변수 초기화 하는 곳이구만 다 ~ 아는 놈들이구먼
-    A.base = 1;
-    A.nextseq = 1;
-    A.window_size = 8;
-    A.estimated_rtt = 15;
-    A.buffer_next = 1;
+/* sender에 해당하는 A 구조체를 초기화하는 함수입니다.*/
+/* Input : window_size, timeout , Output:None */
+void A_init(int window_size,float timeout)
+{
+    A.base = 1; // 교재에서 SR 설명 부분 중 send_base에 해당하는 부분입니다.sending widonw에서 가장 낮은 index의 부분의 flag입니다.
+    A.nextseq = 1; //교재에서 SR설명 부분 중 nextseqnum에 해당하는 변수입니다. 전송하지 않은 패킷 인덱스 중 가장 뒷 부분의 flag입니다
+    A.window_size = window_size; //Selective Repeat 의 window size입니다. base + window_size만큼의 공간이 sender window입니다.
+    A.timeout = timeout; // 사용자가 입력한 timeout, timeout에 해당하는 시간이 sender에서 경과할때 까지 pkt을 받지 못하면 resend event 발생.
+    A.buffer_next = 1; // sender에서 보낼 패킷들의 buffer stack에 대한 flag 입니다.
 }
 
 /* Note that with simplex transfer from a-to-B, there is no B_output() */
@@ -263,14 +266,17 @@ void B_timerinterrupt(void) { // 이 부분은 채점기준에 없다.
 
 /* the following rouytine will be called once (only) before any other */
 /* entity B routines are called. You can use it to do any initialization */
-void B_init(void)
+/* receiver에 해당하는 B 구조체를 초기화하는 함수입니다.*/
+/* Input : window_size, timeout , Output:None */
+void B_init(int window_size,float timeout)
 {
    B.base = 1;
-   B.window_size = 8;
-   B.expect_seq = 1;
-   B.packet_to_send.seqnum = -1;
-   B.packet_to_send.acknum = 0;
-   memset(B.packet_to_send.payload, 0, 20);
+   B.window_size = window_size;
+   B.timeout = timeout;
+   //B.expect_seq = 1;
+   //B.packet_to_send.seqnum = -1;
+   //B.packet_to_send.acknum = 0;
+   //memset(B.packet_to_send.payload, 0, 20);
    //B.packet_to_send.checksum = get_checksum(&B.packet_to_send);
 }
 
@@ -310,14 +316,15 @@ struct event *evlist = NULL; /* the event list */
 #define B 1
 
 /* 구현에 필요한 변수 선언부 prob - corrupt prob 은 0으로 가정합니다. */
+/* main 함수 수정부분 - 변수 timeout 추가 및 A_init,B_init() 인자 추가 */
 int TRACE = 1;     /* for my debugging */
 int nsim = 0;      /* number of messages from 5 to 4 so far */
 int nsimmax = 0;   /* number of msgs to generate, then stop */
-int window_size = 0; /* size of SR's window */
+int window_size = 0; /* + size of SR's window */
 float time = 0.000;
 float lossprob;    /* probability that a packet is dropped  */
 float corruptprob; /* probability that one bit is packet is flipped - not used  */
-float timeout;     /* the duration of the time for which the timer is started and till it finished */
+float timeout;     /* + the duration of the time for which the timer is started and till it finished */
 float lambda;      /* arrival rate of messages from layer 5 */
 int ntolayer3;     /* number sent into layer 3 */
 int nlost;         /* number lost in media */
@@ -334,12 +341,14 @@ int main(int argc, char **argv) {
 
     int i, j;
     char c;
-
+   
+   /*(수정)SR 수행을 위한 initializing 수행 */
+   /* A-sender, B-receiver */
     init(argc, argv);
-    A_init();
-    B_init();
+    A_init(window_size,timeout); // 문제의 조건에 해당하는 windowsize, timeout을 추가합니다.
+    B_init(window_size,timeout); // 문제의 조건에 해당하는 windowsize, timeout을 추가합니다.
 
-    while (1) {
+    while (1){
         eventptr = evlist; /* get next event to simulate */
         if (eventptr == NULL)
             goto terminate;
@@ -413,18 +422,20 @@ void init(int argc, char **argv) /* initialize the simulator */
     float sum, avg;
     float jimsrand();
 
-    if (argc != 6) {
-        printf("usage: %s  Num_Message  prob_loss  window_sizie  AVGintervalfromsender'layer5  debug_level\n", argv[0]);
+    if (argc != 7) {
+        printf("usage: %s  Num_Message  prob_loss  window_size  AVGintervalfromsender'layer5  timeout  debug_level\n", argv[0]);
         exit(1);
     }
    /* 이부분에 number of message, loss prob, Window size, */
+   /* SR 입력변수 정의부 - argv array 를 통해 입력 받은 변수들을 점검하고 사용자에게 확인 후 SR procedure을 진행합니다*/
     nsimmax = atoi(argv[1]); // 1.number of message to simulate
     lossprob = atof(argv[2]); // 2.loss probabiltiy
     window_size = atoi(argv[3]); // 3.window size of SR
     lambda = atof(argv[4]);//AVG time between message from sender's layer5
     timeout = atof(argv[5]); //3. the duration of the time from which the timer is stareted and till it's finished
     TRACE = atoi(argv[6]);
-    corruptprob = 0;
+    corruptprob = 0; // 실습에서는 corrupt 가능성을 0으로 가정합니다.
+
     printf("-----  Selective Repeat Simulator by KIM DONG HO-------- \n\n");
     printf("the number of messages to simulate: %d\n", nsimmax);
     printf("packet loss probability: %f\n", lossprob);
