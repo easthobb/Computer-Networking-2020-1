@@ -48,7 +48,7 @@ void tolayer5(int AorB, char datasent[20]);
 
 struct Sender { // 윈도우 캔낫 무브 포워드 해야된댕
     int base; //베이스는 무엇일가 윈도우 처음
-    int nextseq; //넥스트 시퀀스는 무엇일가...
+    int nextseq; //다음으로 전송할 seq , usable but not yet sent
     int window_size; //이거 입력 받아야한다.
     float estimated_rtt; //이건 왜 들어가있지 아 
     int buffer_next;
@@ -115,7 +115,7 @@ void A_input(struct pkt packet) // sender 동작의 핵심.
    // 안차있는데 심지어 base다 ? 그럼 base 앞으로 forward 
    //3. 이런 ack가 올리가 없지 
    // 추가적으로 타이머 고려 필요
-
+   
     
    if (packet.acknum < A.base) //if in duplicated ack situation
    {
@@ -184,19 +184,17 @@ void A_timerinterrupt(void){
 /*A의 timer interrupt 발생 시 호출되는 함수*/
 // 해주는 일 : 선택적 재전송 
 // base에 해당하는 PKT를 다시 전송해주면 된다. 그리고 다시 타이머 스타팅.
-    for (int i = A.base; i < A.nextseq; ++i) 
-    {
-        struct pkt *packet = &A.packet_buffer[i % BUFSIZE]; //인덱스 오버 방지차원에서 해놓은거구만
-        printf("  A_timerinterrupt: resend packet (seq=%d): %s\n", packet->seqnum, packet->payload);
-        tolayer3(0, *packet);
-    }
-    starttimer(0, A.estimated_rtt);
-    printf("  A_timerinterrupt: timer + %f\n", A.estimated_rtt);
+   struct pkt *packet = &A.packet_buffer[A.base % BUFSIZE]; //인덱스 오버 방지차원에서 해놓은거구만
+   printf("  A_timerinterrupt: resend packet (seq=%d): %s\n", packet->seqnum, packet->payload);
+   tolayer3(0, *packet);
+   starttimer(0, A.estimated_rtt);
+   printf("  A_timerinterrupt: timer + %f\n", A.estimated_rtt);
 }
 
 /* the following routine will be called once (only) before any other */
 /* entity A routines are called. You can use it to do any initialization */
-void A_init(void) { // 변수 초기화 하는 곳이구만 다 ~ 아는 놈들이구먼
+void A_init(void)
+{ // 변수 초기화 하는 곳이구만 다 ~ 아는 놈들이구먼
     A.base = 1;
     A.nextseq = 1;
     A.window_size = 8;
@@ -217,22 +215,41 @@ void B_input(struct pkt packet) //리시버단의 핵심코드
 // 2-1 base 이전 순서의 PKT의 경우 discard 메시지와 함께 무시
 // 2-2 base+windowsize의 PKT 의 경우 어떻게 처리하는지는 설계의 문제이나 안정성을 위해 discard
 
-    if (packet.seqnum != B.expect_seq)
-    {
-        printf("  B_input: not the expected seq. send NAK (ack=%d)\n", B.packet_to_send.acknum);
-        tolayer3(1, B.packet_to_send);
-        return;
-    }//GBN
-
-    printf("  B_input: recv packet (seq=%d): %s\n", packet.seqnum, packet.payload);
-    tolayer5(1, packet.payload);
-
-    printf("  B_input: send ACK (ack=%d)\n", B.expect_seq);
-    B.packet_to_send.acknum = B.expect_seq;
-    B.packet_to_send.checksum = get_checksum(&B.packet_to_send);
-    tolayer3(1, B.packet_to_send);
-
-    ++B.expect_seq;
+/*이미 받은 PKT일 경우 discard*/
+   if(B.packet_buffer[packet.seqnum-1].seqnum == packet.seqnum)
+   {
+      printf("  B_input: the PKT is already received. discard PKT: %d\n", packet.seqnum);
+      return;
+   }
+   else
+   {   // 일단 포인터 먹히는지 봐야할듯 : packet buffer에 쑤셔넣기
+   
+   //printf("  B_input: recv packet (seq=%d): %s\n", packet.seqnum, packet.payload);
+      if(packet.seqnum == B.base)
+      {
+         /*pck ack 전송&payload upperlayer 전송&출력*base전진*/
+         printf("B_input: recv packet (seq=%d): %s \n",packet.seqnum, packet.payload);
+         tolayer5(1, packet.payload);//pkt seq 출력
+         packet.acknum = B.base; //PKT에 ack 담아줌
+         tolayer3(1,packet);//ack sending
+         B.packet_buffer[ packet.seqnum % BUFSIZE] = packet;//패킷 어레이에 넣어주기
+         B.base = packet.seqnum + 1; //base 이동
+         if(B.packet_buffer[B.base-1].acknum!=0)//이미 다음 slot에 packet이 차있다면
+         {
+            B.base ++; //base 전진시킴.
+         }
+         return;
+      }
+      else
+      {  /*출력&payload upperlayer 전송&pck ack 전송*/
+         printf("(outoforeder)B_input: recv packet(buffered) (seq=%d): %s\n", packet.seqnum, packet.payload);
+         tolayer5(1, packet.payload);//pkt seq 출력
+         packet.acknum = B.base; //PKT에 ack 담아줌
+         tolayer3(1,packet);//ack sending
+         B.packet_buffer[ packet.seqnum % BUFSIZE] = packet;//패킷 어레이에 넣어주기
+         return;
+      }
+   }
 }
 
 /* called when B's timer goes off */
@@ -242,7 +259,8 @@ void B_timerinterrupt(void) { // 이 부분은 채점기준에 없다.
 
 /* the following rouytine will be called once (only) before any other */
 /* entity B routines are called. You can use it to do any initialization */
-void B_init(void) {
+void B_init(void)
+{
     B.expect_seq = 1;
     B.packet_to_send.seqnum = -1;
     B.packet_to_send.acknum = 0;
@@ -285,12 +303,14 @@ struct event *evlist = NULL; /* the event list */
 #define A 0
 #define B 1
 
+/* 구현에 필요한 변수 선언부 prob - corrupt prob 은 0으로 가정합니다. */
 int TRACE = 1;     /* for my debugging */
 int nsim = 0;      /* number of messages from 5 to 4 so far */
 int nsimmax = 0;   /* number of msgs to generate, then stop */
 float time = 0.000;
 float lossprob;    /* probability that a packet is dropped  */
-float corruptprob; /* probability that one bit is packet is flipped */
+float corruptprob; /* probability that one bit is packet is flipped - not used  */
+float timeout;     /* the duration of the time for which the timer is started and till it finished */
 float lambda;      /* arrival rate of messages from layer 5 */
 int ntolayer3;     /* number sent into layer 3 */
 int nlost;         /* number lost in media */
@@ -387,15 +407,16 @@ void init(int argc, char **argv) /* initialize the simulator */
     float jimsrand();
 
     if (argc != 6) {
-        printf("usage: %s  num_sim  prob_loss  prob_corrupt  interval  debug_level\n", argv[0]);
+        printf("usage: %s  num_sim  prob_loss  timeout  interval  debug_level\n", argv[0]);
         exit(1);
     }
    /* 이부분에 number of message, loss prob, Window size, */
-    nsimmax = atoi(argv[1]); // number of message to simulate
-    lossprob = atof(argv[2]); // loss probabiltiy
-    corruptprob = atof(argv[3]); //don't use
+    nsimmax = atoi(argv[1]); // 1.number of message to simulate
+    lossprob = atof(argv[2]); // 2.loss probabiltiy
+    timeout = atof(argv[3]); //3. the duration of the time from which the timer is stareted and till it's finished
     lambda = atof(argv[4]);//AVG time between message from sender's layer5
     TRACE = atoi(argv[5]);
+    corruptprob = 0;
     printf("-----  Stop and Wait Network Simulator Version 1.1 -------- \n\n");
     printf("the number of messages to simulate: %d\n", nsimmax)m;
     printf("packet loss probability: %f\n", lossprob);
